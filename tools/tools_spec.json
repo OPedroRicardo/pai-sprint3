@@ -1,0 +1,429 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BluaDiagnostics Tools Specification",
+  "description": "Contrato das ferramentas disponíveis para o agente BluaDiagnostics (Care Plus). Versão 1.0.0",
+  "tools": [
+    {
+      "name": "consultar_historico_paciente",
+      "description": "Recupera o histórico clínico do paciente autenticado a partir do sistema EHR (FHIR R4) da Care Plus. Retorna condições crônicas ativas, medicamentos em uso, alergias documentadas, últimas consultas (até 12 meses) e resultados de exames relevantes. DEVE ser chamada no início de qualquer fluxo de triagem ou validação de prescrição.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "beneficiario_id": {
+            "type": "string",
+            "description": "Identificador único do beneficiário no sistema Care Plus (formato: CPF hash SHA-256 de 64 chars). Nunca expor o CPF real.",
+            "pattern": "^[a-f0-9]{64}$",
+            "examples": ["a3f1c9e2b7d4e6f0a1b2c3d4e5f67890a1b2c3d4e5f678901234567890abcdef"]
+          },
+          "secoes": {
+            "type": "array",
+            "description": "Seções específicas do histórico a recuperar. Se omitido, retorna todas.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "condicoes_cronicas",
+                "medicamentos_ativos",
+                "alergias",
+                "consultas_recentes",
+                "exames_laboratoriais",
+                "vacinas",
+                "internacoes"
+              ]
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "janela_meses": {
+            "type": "integer",
+            "description": "Janela de tempo em meses para consultas e exames. Padrão: 12. Máximo: 60.",
+            "minimum": 1,
+            "maximum": 60,
+            "default": 12
+          }
+        },
+        "required": ["beneficiario_id"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "beneficiario_id": { "type": "string" },
+          "nome_mascarado": { "type": "string", "description": "Ex: 'C*** M***'" },
+          "plano": { "type": "string", "enum": ["Classic", "Master", "Premium", "Plus"] },
+          "condicoes_cronicas": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "cid10": { "type": "string" },
+                "descricao": { "type": "string" },
+                "status": { "type": "string", "enum": ["ativa", "remissão", "resolvida"] },
+                "data_diagnostico": { "type": "string", "format": "date" }
+              }
+            }
+          },
+          "medicamentos_ativos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "nome_generico": { "type": "string" },
+                "dosagem": { "type": "string" },
+                "posologia": { "type": "string" },
+                "prescrito_por": { "type": "string" },
+                "data_inicio": { "type": "string", "format": "date" }
+              }
+            }
+          },
+          "alergias": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "substancia": { "type": "string" },
+                "tipo": { "type": "string", "enum": ["medicamento", "alimento", "ambiental", "outro"] },
+                "severidade": { "type": "string", "enum": ["leve", "moderada", "grave", "anafilaxia"] }
+              }
+            }
+          },
+          "ultima_consulta": {
+            "type": "object",
+            "properties": {
+              "data": { "type": "string", "format": "date" },
+              "especialidade": { "type": "string" },
+              "tipo": { "type": "string", "enum": ["presencial", "teleconsulta"] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "verificar_interacoes_medicamentosas",
+      "description": "Verifica interações medicamentosas entre dois ou mais medicamentos usando base de dados integrada ANVISA + DrugBank. Retorna o grau de severidade da interação, descrição clínica do risco, e recomendação de conduta. Chamada obrigatória sempre que uma nova prescrição ou ajuste de dose for sugerido.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "medicamentos": {
+            "type": "array",
+            "description": "Lista de medicamentos a verificar. Mínimo 2, máximo 10. Use nomes genéricos (DCB/DCI).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "nome_generico": {
+                  "type": "string",
+                  "description": "Nome genérico (DCI) do medicamento. Ex: 'losartana potassica', 'ibuprofeno'.",
+                  "minLength": 2,
+                  "maxLength": 100
+                },
+                "dosagem_mg": {
+                  "type": "number",
+                  "description": "Dosagem em mg por tomada.",
+                  "exclusiveMinimum": 0,
+                  "maximum": 5000
+                },
+                "frequencia_diaria": {
+                  "type": "integer",
+                  "description": "Número de tomadas por dia.",
+                  "minimum": 1,
+                  "maximum": 6
+                }
+              },
+              "required": ["nome_generico"],
+              "additionalProperties": false
+            },
+            "minItems": 2,
+            "maxItems": 10
+          },
+          "contexto_clinico": {
+            "type": "object",
+            "description": "Contexto clínico do paciente para refinar a análise de risco.",
+            "properties": {
+              "idade_anos": { "type": "integer", "minimum": 0, "maximum": 130 },
+              "sexo_biologico": { "type": "string", "enum": ["masculino", "feminino"] },
+              "gestante": { "type": "boolean" },
+              "insuficiencia_renal": { "type": "boolean" },
+              "insuficiencia_hepatica": { "type": "boolean" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": ["medicamentos"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "pares_verificados": { "type": "integer" },
+          "interacoes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "medicamento_a": { "type": "string" },
+                "medicamento_b": { "type": "string" },
+                "grau_severidade": {
+                  "type": "integer",
+                  "description": "1=Leve, 2=Moderada, 3=Grave, 4=Contraindicada",
+                  "minimum": 1,
+                  "maximum": 4
+                },
+                "classificacao": {
+                  "type": "string",
+                  "enum": ["leve", "moderada", "grave", "contraindicada"]
+                },
+                "mecanismo": { "type": "string" },
+                "efeito_clinico": { "type": "string" },
+                "conduta_recomendada": { "type": "string" },
+                "requer_hitl": {
+                  "type": "boolean",
+                  "description": "True se grau >= 3 — fluxo deve pausar para revisão médica."
+                },
+                "fonte": { "type": "string", "enum": ["ANVISA", "DrugBank", "Micromedex"] }
+              }
+            }
+          },
+          "resumo_risco_geral": {
+            "type": "string",
+            "enum": ["seguro", "monitorar", "ajuste_necessario", "contraindicado"]
+          }
+        }
+      }
+    },
+    {
+      "name": "agendar_teleconsulta",
+      "description": "Agenda uma teleconsulta no app Blua para o beneficiário autenticado. Deve ser chamada quando: (a) red flag detectado, (b) triagem resulta em prioridade Laranja ou Vermelho (Manchester), (c) usuário solicita consulta explicitamente, ou (d) interação medicamentosa grau >= 3. Retorna o link da sala virtual e horário confirmado.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "beneficiario_id": {
+            "type": "string",
+            "description": "Identificador único do beneficiário (CPF hash SHA-256).",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "especialidade": {
+            "type": "string",
+            "description": "Especialidade médica desejada.",
+            "enum": [
+              "clinica_geral",
+              "cardiologia",
+              "neurologia",
+              "pneumologia",
+              "psiquiatria",
+              "ginecologia",
+              "pediatria",
+              "dermatologia",
+              "ortopedia",
+              "pronto_atendimento"
+            ]
+          },
+          "urgencia": {
+            "type": "string",
+            "description": "Nível de urgência que determina o SLA de atendimento.",
+            "enum": ["imediata", "urgente", "eletiva"],
+            "default": "eletiva"
+          },
+          "motivo_consulta": {
+            "type": "string",
+            "description": "Resumo clínico do motivo (máx. 500 chars). Não incluir diagnóstico definitivo.",
+            "maxLength": 500
+          },
+          "preferencia_horario": {
+            "type": "object",
+            "description": "Preferência de horário do beneficiário (opcional para urgência 'imediata').",
+            "properties": {
+              "data_inicio": {
+                "type": "string",
+                "format": "date-time",
+                "description": "ISO 8601. Ex: '2026-05-18T08:00:00-03:00'"
+              },
+              "data_fim": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "periodo": {
+                "type": "string",
+                "enum": ["manha", "tarde", "noite", "qualquer"]
+              }
+            },
+            "additionalProperties": false
+          },
+          "id_triagem": {
+            "type": "string",
+            "description": "UUID da sessão de triagem atual para rastreabilidade. Vincula a teleconsulta ao check-up.",
+            "format": "uuid"
+          }
+        },
+        "required": ["beneficiario_id", "especialidade", "urgencia", "motivo_consulta"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "agendamento_id": { "type": "string", "format": "uuid" },
+          "status": {
+            "type": "string",
+            "enum": ["confirmado", "aguardando_medico", "sem_disponibilidade"]
+          },
+          "horario_confirmado": { "type": "string", "format": "date-time" },
+          "medico": {
+            "type": "object",
+            "properties": {
+              "nome": { "type": "string" },
+              "crm": { "type": "string" },
+              "especialidade": { "type": "string" }
+            }
+          },
+          "link_sala_virtual": {
+            "type": "string",
+            "format": "uri",
+            "description": "URL de acesso à sala de teleconsulta. Válido por 2h a partir do horário."
+          },
+          "instrucoes": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "obter_dados_wearables_mock",
+      "description": "[MOCK] Recupera dados de sinais vitais e métricas de saúde dos dispositivos wearables vinculados ao beneficiário (Apple Health / Google Fit / Samsung Health). Dados são mockados para fins de PoC mas seguem o schema de produção. Inclui frequência cardíaca, SpO2, pressão arterial, passos, sono e temperatura de pele.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "beneficiario_id": {
+            "type": "string",
+            "description": "Identificador único do beneficiário (CPF hash SHA-256).",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "metricas": {
+            "type": "array",
+            "description": "Métricas específicas a recuperar. Se omitido, retorna todas disponíveis.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "frequencia_cardiaca",
+                "spo2",
+                "pressao_arterial",
+                "temperatura_pele",
+                "passos_diarios",
+                "sono",
+                "variabilidade_fc",
+                "calorias"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "periodo_horas": {
+            "type": "integer",
+            "description": "Período de coleta em horas retroativos a agora. Padrão: 24h.",
+            "minimum": 1,
+            "maximum": 168,
+            "default": 24
+          },
+          "granularidade": {
+            "type": "string",
+            "description": "Granularidade dos dados retornados.",
+            "enum": ["ultimo_valor", "media_periodo", "serie_temporal"],
+            "default": "ultimo_valor"
+          },
+          "fonte": {
+            "type": "string",
+            "description": "Fonte específica de dados (opcional).",
+            "enum": ["apple_health", "google_fit", "samsung_health", "garmin", "fitbit", "qualquer"],
+            "default": "qualquer"
+          }
+        },
+        "required": ["beneficiario_id"],
+        "additionalProperties": false
+      },
+      "returns": {
+        "type": "object",
+        "properties": {
+          "beneficiario_id": { "type": "string" },
+          "timestamp_coleta": { "type": "string", "format": "date-time" },
+          "fonte_dispositivo": { "type": "string" },
+          "metricas": {
+            "type": "object",
+            "properties": {
+              "frequencia_cardiaca": {
+                "type": "object",
+                "properties": {
+                  "valor_bpm": { "type": "number" },
+                  "classificacao": {
+                    "type": "string",
+                    "enum": ["bradicardia", "normal", "taquicardia"]
+                  },
+                  "alerta": { "type": "boolean" }
+                }
+              },
+              "spo2": {
+                "type": "object",
+                "properties": {
+                  "valor_percentual": { "type": "number", "minimum": 70, "maximum": 100 },
+                  "classificacao": {
+                    "type": "string",
+                    "enum": ["normal", "dessaturacao_leve", "dessaturacao_grave"]
+                  },
+                  "alerta": { "type": "boolean", "description": "True se SpO2 < 94%" }
+                }
+              },
+              "pressao_arterial": {
+                "type": "object",
+                "properties": {
+                  "sistolica_mmhg": { "type": "number" },
+                  "diastolica_mmhg": { "type": "number" },
+                  "classificacao": {
+                    "type": "string",
+                    "enum": ["normal", "elevada", "has_estagio1", "has_estagio2", "crise_hipertensiva"]
+                  },
+                  "alerta": { "type": "boolean", "description": "True se PAS > 180 ou PAD > 120" }
+                }
+              },
+              "temperatura_pele": {
+                "type": "object",
+                "properties": {
+                  "valor_celsius": { "type": "number" },
+                  "delta_baseline_celsius": { "type": "number" },
+                  "alerta": { "type": "boolean" }
+                }
+              },
+              "sono": {
+                "type": "object",
+                "properties": {
+                  "duracao_horas": { "type": "number" },
+                  "qualidade": { "type": "string", "enum": ["ruim", "regular", "boa", "excelente"] },
+                  "fases": {
+                    "type": "object",
+                    "properties": {
+                      "rem_minutos": { "type": "number" },
+                      "profundo_minutos": { "type": "number" },
+                      "leve_minutos": { "type": "number" }
+                    }
+                  }
+                }
+              },
+              "passos_diarios": {
+                "type": "object",
+                "properties": {
+                  "total": { "type": "integer" },
+                  "meta_atingida": { "type": "boolean" }
+                }
+              }
+            }
+          },
+          "alertas_detectados": {
+            "type": "array",
+            "description": "Lista de alertas clínicos derivados dos dados wearable. Cada alerta deve ser avaliado pelo agente para possível escalada.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "metrica": { "type": "string" },
+                "valor": { "type": "string" },
+                "descricao_alerta": { "type": "string" },
+                "recomendacao": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
